@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CVAT Track Merger</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f4f4f9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+        #drop-zone {
+            width: 400px;
+            height: 250px;
+            border: 3px dashed #a0aabf;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: white;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        #drop-zone.dragover {
+            border-color: #4a90e2;
+            background-color: #ebf4ff;
+            transform: scale(1.02);
+        }
+        .message {
+            text-align: center;
+            pointer-events: none;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+            color: #6b7280;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 1.2rem; }
+        p { margin: 0; color: #6b7280; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+    <div id="drop-zone">
+        <div class="message">
+            <div class="icon">📁</div>
+            <h2>Drag & Drop CVAT XML Here</h2>
+            <p>File will be merged and downloaded instantly</p>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+        });
+
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const file = dt.files[0];
+
+            if (file && file.name.endsWith('.xml')) {
+                processFile(file);
+            } else {
+                alert("Please drop a valid XML file.");
+            }
+        }
+
+        function processFile(file) {
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const xmlString = e.target.result;
+                try {
+                    const mergedXML = mergeCVATXML(xmlString);
+                    downloadFile(mergedXML, 'merged_' + file.name);
+                } catch (error) {
+                    console.error("Error parsing XML:", error);
+                    alert("There was an error processing the XML. Check the console.");
+                }
+            };
+
+            reader.readAsText(file);
+        }
+
+        function mergeCVATXML(xmlString) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+
+            // 1. Group all elements by Label, then by Frame
+            // Data structure: { "torso_coco": { "0": [node1, node2], "1": [node3] }, "swimmer": { ... } }
+            const frameData = {};
+            const originalTracks = Array.from(xmlDoc.getElementsByTagName('track'));
+
+            originalTracks.forEach(track => {
+                const label = track.getAttribute('label');
+                if (!frameData[label]) {
+                    frameData[label] = {};
+                }
+
+                Array.from(track.children).forEach(child => {
+                    const frameStr = child.getAttribute('frame');
+                    if (frameStr === null) return;
+
+                    if (!frameData[label][frameStr]) {
+                        frameData[label][frameStr] = [];
+                    }
+                    // Store every shape for this specific frame
+                    frameData[label][frameStr].push(child);
+                });
+            });
+
+            const root = xmlDoc.getElementsByTagName('annotations')[0];
+
+            // 2. Erase all original fragmented tracks from the document
+            originalTracks.forEach(track => track.parentNode.removeChild(track));
+
+            let trackIdCounter = 0;
+
+            // 3. Build brand new master tracks
+            for (const label in frameData) {
+                const newTrack = xmlDoc.createElement('track');
+                newTrack.setAttribute('id', trackIdCounter++);
+                newTrack.setAttribute('label', label);
+                newTrack.setAttribute('source', 'auto');
+
+                // Sort frames numerically to guarantee timeline order
+                const frames = Object.keys(frameData[label]).map(Number).sort((a, b) => a - b);
+
+                frames.forEach(frameNum => {
+                    const elements = frameData[label][frameNum.toString()];
+                    
+                    let bestElement = null;
+                    let maxScore = -1;
+
+                    // Score each duplicate shape on this frame
+                    elements.forEach(el => {
+                        let score = 0;
+                        
+                        if (el.tagName === 'skeleton') {
+                            // Count how many keypoints are visible (outside="0")
+                            const points = Array.from(el.getElementsByTagName('points'));
+                            points.forEach(pt => {
+                                if (pt.getAttribute('outside') === '0') {
+                                    score++;
+                                }
+                            });
+                        } else if (el.tagName === 'box') {
+                            // Boxes just get a score of 1 if visible, 0 if not
+                            if (el.getAttribute('outside') === '0') {
+                                score++;
+                            }
+                        }
+
+                        // Keep the one with the highest score
+                        if (score > maxScore) {
+                            maxScore = score;
+                            bestElement = el;
+                        }
+                    });
+
+                    // Append the winning element to our master track
+                    if (bestElement) {
+                        // Force the parent container (skeleton/box) to be visible so the track doesn't split
+                        bestElement.setAttribute('outside', '0');
+                        
+                        // We intentionally DO NOT modify the inner <points> here.
+                        // They retain their original model predictions.
+
+                        newTrack.appendChild(bestElement);
+                    }
+                });
+
+                // Attach the perfect track back to the root XML
+                root.appendChild(newTrack);
+            }
+
+            const serializer = new XMLSerializer();
+            let finalXmlString = serializer.serializeToString(xmlDoc);
+
+            if (!finalXmlString.startsWith('<?xml')) {
+                finalXmlString = '<?xml version="1.0" encoding="utf-8"?>\n' + finalXmlString;
+            }
+
+            return finalXmlString;
+        }
+
+        function downloadFile(content, filename) {
+            const blob = new Blob([content], { type: 'text/xml' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+        }
+    </script>
+</body>
+</html>
