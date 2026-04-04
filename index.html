@@ -112,16 +112,15 @@
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(xmlString, "text/xml");
 
-            // 1. Group all elements by Label, then by Frame
-            // Data structure: { "torso_coco": { "0": [node1, node2], "1": [node3] }, "swimmer": { ... } }
             const frameData = {};
+            const expectedPoints = {}; // Stores the full schema of joints for each skeleton
             const originalTracks = Array.from(xmlDoc.getElementsByTagName('track'));
 
+            // 1. First Pass: Group elements and learn the skeleton schema
             originalTracks.forEach(track => {
                 const label = track.getAttribute('label');
-                if (!frameData[label]) {
-                    frameData[label] = {};
-                }
+                if (!frameData[label]) frameData[label] = {};
+                if (!expectedPoints[label]) expectedPoints[label] = new Set();
 
                 Array.from(track.children).forEach(child => {
                     const frameStr = child.getAttribute('frame');
@@ -130,27 +129,35 @@
                     if (!frameData[label][frameStr]) {
                         frameData[label][frameStr] = [];
                     }
-                    // Store every shape for this specific frame
                     frameData[label][frameStr].push(child);
+
+                    // If it's a skeleton, map out all the possible joints it possesses
+                    if (child.tagName === 'skeleton') {
+                        Array.from(child.getElementsByTagName('points')).forEach(pt => {
+                            expectedPoints[label].add(pt.getAttribute('label'));
+                        });
+                    }
                 });
             });
 
             const root = xmlDoc.getElementsByTagName('annotations')[0];
 
-            // 2. Erase all original fragmented tracks from the document
+            // 2. Erase old tracks
             originalTracks.forEach(track => track.parentNode.removeChild(track));
 
             let trackIdCounter = 0;
 
-            // 3. Build brand new master tracks
+            // 3. Build master tracks
             for (const label in frameData) {
                 const newTrack = xmlDoc.createElement('track');
                 newTrack.setAttribute('id', trackIdCounter++);
                 newTrack.setAttribute('label', label);
                 newTrack.setAttribute('source', 'auto');
 
-                // Sort frames numerically to guarantee timeline order
                 const frames = Object.keys(frameData[label]).map(Number).sort((a, b) => a - b);
+                
+                // Track last known coordinates to prevent invisible points from snapping to 0,0
+                const lastKnownPos = {}; 
 
                 frames.forEach(frameNum => {
                     const elements = frameData[label][frameNum.toString()];
@@ -158,45 +165,74 @@
                     let bestElement = null;
                     let maxScore = -1;
 
-                    // Score each duplicate shape on this frame
+                    // Score duplicates on this frame to find the most accurate prediction
                     elements.forEach(el => {
                         let score = 0;
-                        
                         if (el.tagName === 'skeleton') {
-                            // Count how many keypoints are visible (outside="0")
                             const points = Array.from(el.getElementsByTagName('points'));
                             points.forEach(pt => {
-                                if (pt.getAttribute('outside') === '0') {
-                                    score++;
-                                }
+                                if (pt.getAttribute('outside') === '0') score++;
                             });
                         } else if (el.tagName === 'box') {
-                            // Boxes just get a score of 1 if visible, 0 if not
-                            if (el.getAttribute('outside') === '0') {
-                                score++;
-                            }
+                            if (el.getAttribute('outside') === '0') score++;
                         }
 
-                        // Keep the one with the highest score
                         if (score > maxScore) {
                             maxScore = score;
                             bestElement = el;
                         }
                     });
 
-                    // Append the winning element to our master track
                     if (bestElement) {
-                        // Force the parent container (skeleton/box) to be visible so the track doesn't split
-                        bestElement.setAttribute('outside', '0');
+                        bestElement.setAttribute('outside', '0'); 
+                        bestElement.setAttribute('keyframe', '1'); 
                         
-                        // We intentionally DO NOT modify the inner <points> here.
-                        // They retain their original model predictions.
+                        if (bestElement.tagName === 'skeleton') {
+                            const existingPoints = new Map();
+                            const pointsElements = Array.from(bestElement.getElementsByTagName('points'));
+                            
+                            // Process the points that YOLO actually predicted
+                            pointsElements.forEach(pt => {
+                                const ptLabel = pt.getAttribute('label');
+                                existingPoints.set(ptLabel, pt);
+                                
+                                pt.setAttribute('keyframe', '1');
+
+                                if (pt.getAttribute('outside') === '1') {
+                                    pt.setAttribute('outside', '1');
+                                    pt.setAttribute('occluded', '1');
+                                } else {
+                                    pt.setAttribute('outside', '0');
+                                }
+
+                                // Update last known position
+                                lastKnownPos[ptLabel] = pt.getAttribute('points');
+                            });
+
+                            // Inject missing points based on the schema we learned earlier
+                            if (expectedPoints[label]) {
+                                expectedPoints[label].forEach(expectedLabel => {
+                                    if (!existingPoints.has(expectedLabel)) {
+                                        // Create the missing ghost point
+                                        const newPt = xmlDoc.createElement('points');
+                                        newPt.setAttribute('label', expectedLabel);
+                                        newPt.setAttribute('keyframe', '1');
+                                        newPt.setAttribute('outside', '1'); // Force CVAT to hide it
+                                        newPt.setAttribute('occluded', '1');
+                                        
+                                        // Use last known position, or a safe default if it's the very first frame
+                                        newPt.setAttribute('points', lastKnownPos[expectedLabel] || "0.00,0.00");
+                                        
+                                        bestElement.appendChild(newPt);
+                                    }
+                                });
+                            }
+                        }
 
                         newTrack.appendChild(bestElement);
                     }
                 });
 
-                // Attach the perfect track back to the root XML
                 root.appendChild(newTrack);
             }
 
