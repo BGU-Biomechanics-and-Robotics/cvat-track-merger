@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CVAT Track Merger</title>
+    <title>Dataset Utility Tools</title>
+    <!-- mp4-muxer library for creating MP4 files locally in the browser -->
+    <script src="https://unpkg.com/mp4-muxer@3.0.4/build/mp4-muxer.js"></script>
+    <!-- JSZip for creating ZIP files natively in the browser -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;
@@ -12,24 +16,40 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
             color: #333;
+            padding: 20px;
+            box-sizing: border-box;
         }
-        #drop-zone {
-            width: 400px;
-            height: 250px;
+        .header {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+            max-width: 1300px;
+        }
+        .tool-card {
+            width: 380px;
+            height: 350px;
             border: 3px dashed #a0aabf;
             border-radius: 12px;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             background-color: white;
             transition: all 0.2s ease;
-            cursor: pointer;
             box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            position: relative;
+            cursor: pointer;
         }
-        #drop-zone.dragover {
+        .tool-card.dragover {
             border-color: #4a90e2;
             background-color: #ebf4ff;
             transform: scale(1.02);
@@ -37,6 +57,7 @@
         .message {
             text-align: center;
             pointer-events: none;
+            padding: 20px;
         }
         .icon {
             font-size: 48px;
@@ -45,78 +66,250 @@
         }
         h2 { margin: 0 0 10px 0; font-size: 1.2rem; }
         p { margin: 0; color: #6b7280; font-size: 0.9rem; }
+
+        .btn {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: background-color 0.2s;
+            z-index: 2;
+        }
+        .btn:hover {
+            background-color: #357abd;
+        }
+        .options {
+            margin-top: 15px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            font-size: 0.9rem;
+            z-index: 2;
+        }
+        input[type="number"] {
+            width: 60px;
+            padding: 4px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .progress {
+            margin-top: 15px;
+            color: #4a90e2;
+            font-weight: bold;
+            height: 20px;
+            font-size: 0.9rem;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
 
-    <div id="drop-zone">
-        <div class="message">
-            <div class="icon">📁</div>
-            <h2>Drag & Drop CVAT XML Here</h2>
-            <p>File will be merged and downloaded instantly</p>
+    <div class="header">
+        <h1>Dataset Utility Tools</h1>
+    </div>
+
+    <div class="container">
+        <!-- TOOL 1: CVAT Track Merger -->
+        <div id="xml-tool" class="tool-card">
+            <div class="message">
+                <div class="icon">📁</div>
+                <h2>Merge CVAT XML</h2>
+                <p>Drag & Drop CVAT XML Here</p>
+                <p style="margin-top: 5px; font-size: 0.8rem;">File will be merged and downloaded instantly</p>
+            </div>
+            <div id="xml-progress" class="progress"></div>
+        </div>
+
+        <!-- TOOL 2: Frames to MP4 Merger -->
+        <div id="mp4-tool" class="tool-card">
+            <div class="message">
+                <div class="icon">🎞️</div>
+                <h2>Frames to MP4 Merger</h2>
+                <p>Drag & Drop Folder / Select Folder</p>
+                <p style="font-size: 0.8rem; margin-top: 5px;">(Saved in exact frames / Max Quality)</p>
+            </div>
+
+            <input type="file" id="dir-input" webkitdirectory directory multiple style="display:none" />
+            <button class="btn" onclick="document.getElementById('dir-input').click()">Select Directory</button>
+
+            <div class="options">
+                <label>FPS: <input type="number" id="fps-input" value="30" min="1" max="120"/></label>
+            </div>
+            <div id="mp4-progress" class="progress"></div>
+        </div>
+
+        <!-- TOOL 3: Video to Frames Extractor -->
+        <div id="extract-tool" class="tool-card">
+            <div class="message">
+                <div class="icon">🎬</div>
+                <h2>Video to Frames Zipped</h2>
+                <p>Drag & Drop Video / Select Video</p>
+                <p style="font-size: 0.8rem; margin-top: 5px;">(Exact exact frame count via mid-seek)</p>
+            </div>
+
+            <input type="file" id="video-input" accept="video/*" style="display:none" />
+            <button class="btn" onclick="document.getElementById('video-input').click()">Select Video</button>
+
+            <div class="options">
+                <label>Extract FPS: <input type="number" id="extract-fps-input" value="30" min="1" max="120"/></label>
+            </div>
+            <div id="extract-progress" class="progress"></div>
         </div>
     </div>
 
     <script>
-        const dropZone = document.getElementById('drop-zone');
-
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, preventDefaults, false);
-            document.body.addEventListener(eventName, preventDefaults, false);
-        });
+        /* ====================================================
+           UTILITIES & DRAG-AND-DROP SETUP
+        ==================================================== */
+        function downloadBlob(blob, filename) {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+        }
 
         function preventDefaults(e) {
             e.preventDefault();
             e.stopPropagation();
         }
 
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+        // Global prevent defaults for body
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            document.body.addEventListener(eventName, preventDefaults, false);
         });
 
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
-        });
+        // Setup drop zone visual states and handler
+        function setupDropZone(element, onDrop) {
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                element.addEventListener(eventName, preventDefaults, false);
+            });
 
-        dropZone.addEventListener('drop', handleDrop, false);
+            ['dragenter', 'dragover'].forEach(eventName => {
+                element.addEventListener(eventName, () => element.classList.add('dragover'), false);
+            });
 
-        function handleDrop(e) {
-            const dt = e.dataTransfer;
-            const file = dt.files[0];
+            ['dragleave', 'drop'].forEach(eventName => {
+                element.addEventListener(eventName, () => element.classList.remove('dragover'), false);
+            });
 
-            if (file && file.name.endsWith('.xml')) {
-                processFile(file);
-            } else {
-                alert("Please drop a valid XML file.");
-            }
+            element.addEventListener('drop', onDrop, false);
         }
 
-        function processFile(file) {
+        // Robust async folder traversal designed specifically to bypass Chrome D&D timeout limits
+        async function getFilesFromDataTransfer(items) {
+            const fileEntries = [];
+            const dirEntries = [];
+
+            // 1. Synchronously pull out all entries from the DataTransferItemList before event context expires
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].kind === 'file') {
+                    const getEntry = items[i].webkitGetAsEntry || items[i].getAsEntry;
+                    if (getEntry) {
+                        const entry = getEntry.call(items[i]);
+                        if (entry) {
+                            if (entry.isFile) fileEntries.push(entry);
+                            else if (entry.isDirectory) dirEntries.push(entry);
+                        }
+                    }
+                }
+            }
+
+            // 2. Helper to safely loop reader until directory is completely exhausted
+            const readDir = async (dirEntry) => {
+                const reader = dirEntry.createReader();
+                const entries = [];
+                let hasMore = true;
+                while (hasMore) {
+                    try {
+                        const batch = await new Promise((resolve, reject) => {
+                            reader.readEntries(resolve, reject);
+                        });
+                        if (batch.length > 0) {
+                            entries.push(...batch);
+                        } else {
+                            hasMore = false;
+                        }
+                    } catch (e) {
+                        console.error("Directory read error:", e);
+                        hasMore = false;
+                    }
+                }
+                return entries;
+            };
+
+            // 3. Process all nested directories
+            while (dirEntries.length > 0) {
+                const currentDir = dirEntries.shift();
+                const children = await readDir(currentDir);
+                for (const child of children) {
+                    if (child.isFile) fileEntries.push(child);
+                    else if (child.isDirectory) dirEntries.push(child);
+                }
+            }
+
+            // 4. Concurrently request underlying File buffers for max speed
+            const filePromises = fileEntries.map(entry => {
+                return new Promise(resolve => {
+                    entry.file(file => {
+                        // Attach the full path to the file object for dataset structural parsing
+                        try { file.customPath = entry.fullPath; } catch(e) {}
+                        if (!file.customPath) {
+                            Object.defineProperty(file, 'customPath', { value: entry.fullPath, writable: false });
+                        }
+                        resolve(file);
+                    }, err => {
+                        console.error("File access error:", err);
+                        resolve(null);
+                    });
+                });
+            });
+
+            const files = await Promise.all(filePromises);
+            return files.filter(f => f !== null);
+        }
+
+        /* ====================================================
+           TOOL 1: CVAT TRACK MERGER
+        ==================================================== */
+        setupDropZone(document.getElementById('xml-tool'), (e) => {
+            const file = e.dataTransfer.files[0];
+            if (file && file.name.endsWith('.xml')) processXMLFile(file);
+            else alert("Please drop a valid XML file.");
+        });
+
+        function processXMLFile(file) {
             const reader = new FileReader();
-            
             reader.onload = function(e) {
-                const xmlString = e.target.result;
                 try {
-                    const mergedXML = mergeCVATXML(xmlString);
-                    downloadFile(mergedXML, 'merged_' + file.name);
+                    const mergedXML = mergeCVATXML(e.target.result);
+                    const blob = new Blob([mergedXML], { type: 'text/xml' });
+                    downloadBlob(blob, 'merged_' + file.name);
+                    const prog = document.getElementById('xml-progress');
+                    prog.innerText = "Merged successfully!";
+                    setTimeout(() => { prog.innerText = ""; }, 3000);
                 } catch (error) {
                     console.error("Error parsing XML:", error);
                     alert("There was an error processing the XML. Check the console.");
                 }
             };
-
             reader.readAsText(file);
         }
 
         function mergeCVATXML(xmlString) {
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(xmlString, "text/xml");
-
             const frameData = {};
-            const expectedPoints = {}; // Stores the full schema of joints for each skeleton
+            const expectedPoints = {};
             const originalTracks = Array.from(xmlDoc.getElementsByTagName('track'));
 
-            // 1. First Pass: Group elements and learn the skeleton schema
             originalTracks.forEach(track => {
                 const label = track.getAttribute('label');
                 if (!frameData[label]) frameData[label] = {};
@@ -125,13 +318,9 @@
                 Array.from(track.children).forEach(child => {
                     const frameStr = child.getAttribute('frame');
                     if (frameStr === null) return;
-
-                    if (!frameData[label][frameStr]) {
-                        frameData[label][frameStr] = [];
-                    }
+                    if (!frameData[label][frameStr]) frameData[label][frameStr] = [];
                     frameData[label][frameStr].push(child);
 
-                    // If it's a skeleton, map out all the possible joints it possesses
                     if (child.tagName === 'skeleton') {
                         Array.from(child.getElementsByTagName('points')).forEach(pt => {
                             expectedPoints[label].add(pt.getAttribute('label'));
@@ -141,13 +330,10 @@
             });
 
             const root = xmlDoc.getElementsByTagName('annotations')[0];
-
-            // 2. Erase old tracks
             originalTracks.forEach(track => track.parentNode.removeChild(track));
 
             let trackIdCounter = 0;
 
-            // 3. Build master tracks
             for (const label in frameData) {
                 const newTrack = xmlDoc.createElement('track');
                 newTrack.setAttribute('id', trackIdCounter++);
@@ -155,107 +341,396 @@
                 newTrack.setAttribute('source', 'auto');
 
                 const frames = Object.keys(frameData[label]).map(Number).sort((a, b) => a - b);
-                
-                // Track last known coordinates to prevent invisible points from snapping to 0,0
-                const lastKnownPos = {}; 
+                const lastKnownPos = {};
 
                 frames.forEach(frameNum => {
                     const elements = frameData[label][frameNum.toString()];
-                    
                     let bestElement = null;
                     let maxScore = -1;
 
-                    // Score duplicates on this frame to find the most accurate prediction
                     elements.forEach(el => {
                         let score = 0;
                         if (el.tagName === 'skeleton') {
                             const points = Array.from(el.getElementsByTagName('points'));
-                            points.forEach(pt => {
-                                if (pt.getAttribute('outside') === '0') score++;
-                            });
+                            points.forEach(pt => { if (pt.getAttribute('outside') === '0') score++; });
                         } else if (el.tagName === 'box') {
                             if (el.getAttribute('outside') === '0') score++;
                         }
-
-                        if (score > maxScore) {
-                            maxScore = score;
-                            bestElement = el;
-                        }
+                        if (score > maxScore) { maxScore = score; bestElement = el; }
                     });
 
                     if (bestElement) {
-                        bestElement.setAttribute('outside', '0'); 
-                        bestElement.setAttribute('keyframe', '1'); 
-                        
+                        bestElement.setAttribute('outside', '0');
+                        bestElement.setAttribute('keyframe', '1');
+
                         if (bestElement.tagName === 'skeleton') {
                             const existingPoints = new Map();
                             const pointsElements = Array.from(bestElement.getElementsByTagName('points'));
-                            
-                            // Process the points that YOLO actually predicted
+
                             pointsElements.forEach(pt => {
                                 const ptLabel = pt.getAttribute('label');
                                 existingPoints.set(ptLabel, pt);
-                                
                                 pt.setAttribute('keyframe', '1');
 
                                 if (pt.getAttribute('outside') === '1') {
                                     pt.setAttribute('outside', '1');
                                     pt.setAttribute('occluded', '1');
-                                } else {
-                                    pt.setAttribute('outside', '0');
-                                }
-
-                                // Update last known position
+                                } else { pt.setAttribute('outside', '0'); }
                                 lastKnownPos[ptLabel] = pt.getAttribute('points');
                             });
 
-                            // Inject missing points based on the schema we learned earlier
                             if (expectedPoints[label]) {
                                 expectedPoints[label].forEach(expectedLabel => {
                                     if (!existingPoints.has(expectedLabel)) {
-                                        // Create the missing ghost point
                                         const newPt = xmlDoc.createElement('points');
                                         newPt.setAttribute('label', expectedLabel);
                                         newPt.setAttribute('keyframe', '1');
-                                        newPt.setAttribute('outside', '1'); // Force CVAT to hide it
+                                        newPt.setAttribute('outside', '1');
                                         newPt.setAttribute('occluded', '1');
-                                        
-                                        // Use last known position, or a safe default if it's the very first frame
                                         newPt.setAttribute('points', lastKnownPos[expectedLabel] || "0.00,0.00");
-                                        
                                         bestElement.appendChild(newPt);
                                     }
                                 });
                             }
                         }
-
                         newTrack.appendChild(bestElement);
                     }
                 });
-
                 root.appendChild(newTrack);
             }
 
             const serializer = new XMLSerializer();
             let finalXmlString = serializer.serializeToString(xmlDoc);
-
             if (!finalXmlString.startsWith('<?xml')) {
                 finalXmlString = '<?xml version="1.0" encoding="utf-8"?>\n' + finalXmlString;
             }
-
             return finalXmlString;
         }
 
-        function downloadFile(content, filename) {
-            const blob = new Blob([content], { type: 'text/xml' });
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(link.href);
+
+        /* ====================================================
+           TOOL 2: FRAMES TO MP4 MERGER
+        ==================================================== */
+        const dirInput = document.getElementById('dir-input');
+        const mp4Progress = document.getElementById('mp4-progress');
+
+        // Allow clicking standard dialog
+        dirInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files || []);
+            e.target.value = ""; // Reset
+            if (files.length > 0) processImageFilesForVideo(files);
+        });
+
+        // Allow Drag and Drop logic
+        setupDropZone(document.getElementById('mp4-tool'), async (e) => {
+            let filesToProcess = [];
+
+            // Try extracting using the robust FileSystem API
+            if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+                filesToProcess = await getFilesFromDataTransfer(e.dataTransfer.items);
+            }
+
+            // Fallback for browsers that don't support the items API properly
+            if ((!filesToProcess || filesToProcess.length === 0) && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                filesToProcess = Array.from(e.dataTransfer.files);
+            }
+
+            if (filesToProcess && filesToProcess.length > 0) {
+                processImageFilesForVideo(filesToProcess);
+            } else {
+                alert("No files could be read. Make sure you dropped a valid folder with images.");
+            }
+        });
+
+        async function processImageFilesForVideo(files) {
+            if (typeof VideoEncoder === 'undefined') {
+                alert("Your browser does not support WebCodecs. Please use modern Chrome/Edge.");
+                return;
+            }
+
+            if (!files || files.length === 0) {
+                alert("No image frames found in the selection.");
+                return;
+            }
+
+            // Check if user dropped loose flat files instead of a folder
+            const isFlatDrop = files.every(f => {
+                const p = (f.customPath || f.webkitRelativePath || f.name).replace(/^\//, '');
+                return p.split('/').length === 1;
+            });
+
+            const validImages = files.filter(f => f.name.match(/\.(jpg|jpeg|png|webp)$/i));
+            let targetFiles = [];
+            let outputName = "merged_frames.mp4";
+
+            if (isFlatDrop) {
+                targetFiles = validImages;
+                if (targetFiles.length === 0) {
+                    alert("No image frames found in the selection.");
+                    return;
+                }
+            } else {
+                // Find root folder logically from the first file's path
+                const firstPath = (files[0].customPath || files[0].webkitRelativePath || files[0].name).replace(/^\//, '');
+                const rootFolder = firstPath.split('/')[0];
+
+                if (rootFolder === 'frames') {
+                    // Uploaded the 'frames' directory directly
+                    targetFiles = validImages.filter(f => {
+                        const p = (f.customPath || f.webkitRelativePath || f.name).replace(/^\//, '');
+                        return p.startsWith('frames/');
+                    });
+                    outputName = "frames.mp4";
+
+                    if (targetFiles.length === 0) {
+                        alert("No image files found inside the 'frames' directory.");
+                        return;
+                    }
+                } else {
+                    // Uploaded a parent directory (e.g. Albert_6-(B))
+                    const expectedPrefix = `${rootFolder}/frames/`;
+                    targetFiles = validImages.filter(f => {
+                        const p = (f.customPath || f.webkitRelativePath || f.name).replace(/^\//, '');
+                        return p.startsWith(expectedPrefix);
+                    });
+
+                    if (targetFiles.length > 0) {
+                        outputName = `${rootFolder}.mp4`;
+                    } else {
+                        alert(`No 'frames' directory found in '${rootFolder}', or it contains no images. Please upload the 'frames' directory directly or its parent directory.`);
+                        return;
+                    }
+                }
+            }
+
+            const imageFiles = targetFiles;
+
+            function extractFloat(str) {
+                const match = str.match(/(?:^|[-_])(\d+(?:\.\d+)?)\.[a-zA-Z0-9]+$/);
+                return match ? parseFloat(match[1]) : null;
+            }
+
+            imageFiles.sort((a, b) => {
+                const floatA = extractFloat(a.name);
+                const floatB = extractFloat(b.name);
+                if (floatA !== null && floatB !== null && floatA !== floatB) {
+                    return floatA - floatB;
+                }
+                const pathA = a.customPath || a.webkitRelativePath || a.name;
+                const pathB = b.customPath || b.webkitRelativePath || b.name;
+                return pathA.localeCompare(pathB, undefined, { numeric: true });
+            });
+
+            mp4Progress.innerText = "Initializing encoder...";
+
+            try {
+                const firstImg = await createImageBitmap(imageFiles[0]);
+                let width = firstImg.width;
+                let height = firstImg.height;
+
+                if (width % 2 !== 0) width -= 1;
+                if (height % 2 !== 0) height -= 1;
+
+                const fps = parseInt(document.getElementById('fps-input').value) || 30;
+
+                const muxer = new Mp4Muxer.Muxer({
+                    target: new Mp4Muxer.ArrayBufferTarget(),
+                    video: { codec: 'avc', width: width, height: height },
+                    fastStart: 'in-memory'
+                });
+
+                const videoEncoder = new VideoEncoder({
+                    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                    error: err => {
+                        console.error(err);
+                        mp4Progress.innerText = "Error during encoding.";
+                    }
+                });
+
+                let config = {
+                    codec: 'avc1.640034',
+                    width: width,
+                    height: height,
+                    bitrate: 100_000_000, // Maximized bitrate (100 Mbps) for archival quality preservation
+                    framerate: fps,
+                    avc: { format: 'annexb' }
+                };
+
+                try {
+                    const support = await VideoEncoder.isConfigSupported(config);
+                    if (!support.supported) config.codec = 'avc1.42E01F';
+                } catch(e) {}
+
+                videoEncoder.configure(config);
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+                const durationMicro = Math.round(1_000_000 / fps);
+
+                for (let i = 0; i < imageFiles.length; i++) {
+                    const bmp = await createImageBitmap(imageFiles[i]);
+                    ctx.drawImage(bmp, 0, 0, width, height);
+
+                    const timestamp = Math.round(i * durationMicro);
+
+                    // Crucial fix: Providing explicit duration ensures the last frame is not skipped
+                    // by metadata interpreters during playback/extraction.
+                    const frame = new VideoFrame(canvas, {
+                        timestamp: timestamp,
+                        duration: durationMicro
+                    });
+
+                    const keyFrame = i % fps === 0;
+                    videoEncoder.encode(frame, { keyFrame });
+
+                    frame.close();
+                    bmp.close();
+
+                    if (i % 10 === 0 || i === imageFiles.length - 1) {
+                        mp4Progress.innerText = `Encoding... ${Math.round(((i + 1) / imageFiles.length) * 100)}%`;
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+                }
+
+                mp4Progress.innerText = "Finalizing MP4...";
+                await videoEncoder.flush();
+                muxer.finalize();
+
+                const buffer = muxer.target.buffer;
+                const blob = new Blob([buffer], { type: 'video/mp4' });
+
+                mp4Progress.innerText = "Done! Download starting...";
+                downloadBlob(blob, outputName);
+                setTimeout(() => { mp4Progress.innerText = ""; }, 4000);
+
+            } catch (error) {
+                console.error(error);
+                mp4Progress.innerText = "An error occurred.";
+                alert("Error during video creation: " + error.message);
+            }
         }
+
+
+        /* ====================================================
+           TOOL 3: VIDEO TO FRAMES (Zipped)
+        ==================================================== */
+        const videoInput = document.getElementById('video-input');
+        const extractProgress = document.getElementById('extract-progress');
+
+        // Allow clicking standard dialog
+        videoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            e.target.value = ""; // Reset
+            if (file) processVideoForExtraction(file);
+        });
+
+        // Allow Drag and Drop
+        setupDropZone(document.getElementById('extract-tool'), (e) => {
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('video/')) {
+                processVideoForExtraction(file);
+            } else {
+                alert("Please drop a valid video file (.mp4, .webm, etc).");
+            }
+        });
+
+        async function processVideoForExtraction(videoFile) {
+            extractProgress.innerText = "Reading video metadata...";
+
+            const zip = new JSZip();
+            const video = document.createElement('video');
+            const url = URL.createObjectURL(videoFile);
+            video.src = url;
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = 'auto';
+
+            // Wait for metadata to grab dimensions and duration
+            await new Promise((resolve, reject) => {
+                video.onloadedmetadata = resolve;
+                video.onerror = reject;
+            });
+
+            if (video.readyState === 0 || video.duration === Infinity || isNaN(video.duration)) {
+                alert("Could not determine video duration. The video format might not be fully supported.");
+                extractProgress.innerText = "";
+                URL.revokeObjectURL(url);
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+
+            const fps = parseInt(document.getElementById('extract-fps-input').value) || 30;
+            const duration = video.duration;
+            let currentFrame = 0;
+
+            extractProgress.innerText = "Extracting frames...";
+
+            // Step sequentially through the video via time seeking
+            while (true) {
+                // Crucial fix: Offset the time by +0.5 (half a frame) to seek right into the center
+                // of the target frame. This cleanly sidesteps floating-point rounding errors that drop frames.
+                const targetTime = (currentFrame + 0.5) / fps;
+
+                if (targetTime >= duration) break;
+
+                video.currentTime = targetTime;
+
+                await new Promise(resolve => {
+                    let resolved = false;
+                    const onSeeked = () => {
+                        if (resolved) return;
+                        resolved = true;
+                        video.removeEventListener('seeked', onSeeked);
+                        resolve();
+                    };
+                    video.addEventListener('seeked', onSeeked);
+
+                    // Failsafe in case seeking gets stuck
+                    setTimeout(() => {
+                        if (resolved) return;
+                        resolved = true;
+                        video.removeEventListener('seeked', onSeeked);
+                        resolve();
+                    }, 500);
+                });
+
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // Maximize JPEG quality parameter to 1.0 (near lossless preservation of the original encode)
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 1.0));
+
+                const frameName = `frame_${String(currentFrame).padStart(6, '0')}.jpg`;
+                zip.file(frameName, blob);
+
+                currentFrame++;
+
+                if (currentFrame % 5 === 0) {
+                    extractProgress.innerText = `Extracting... ${currentFrame} frames`;
+                }
+            }
+
+            extractProgress.innerText = "Zipping frames (This may take a moment)...";
+
+            try {
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                extractProgress.innerText = "Done! Download starting...";
+                downloadBlob(zipBlob, "frames.zip");
+            } catch (err) {
+                console.error(err);
+                alert("Failed to create ZIP archive.");
+            }
+
+            setTimeout(() => { extractProgress.innerText = ""; }, 4000);
+            URL.revokeObjectURL(url);
+        }
+
     </script>
 </body>
 </html>
